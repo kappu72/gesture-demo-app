@@ -14,7 +14,7 @@ type Props = {
   maxRadiusRatio?: number;           // fascia massima raggio
   turnThreshold?: number;            // giri minimi per considerare "cerchio"
   onCircle?: (res: CircleResult) => void;
-  onRotationChange?: (turns: number, direction: 'clockwise' | 'counterclockwise') => void; // chiamato in tempo reale
+  onRotationChange?: (turns: number, direction: 'clockwise' | 'counterclockwise', speedMultiplier: number) => void; // speedMultiplier: 1 = lento, 2 = veloce
   onGestureStart?: () => void; // chiamato quando inizi il gesto
   onGestureEnd?: () => void; // chiamato quando finisce il gesto
 };
@@ -25,6 +25,12 @@ const normalizeAngle = (a: number) => {
   const TWO_PI = Math.PI * 2;
   let x = ((a + Math.PI) % TWO_PI + TWO_PI) % TWO_PI - Math.PI;
   return x;
+};
+
+// Moltiplicatore fisso a 1x - scroll lineare senza accelerazione
+const calculateSpeedMultiplier = (delta: number) => {
+  'worklet';
+  return 1.0;
 };
 
 export default function CircleGestureDetector({
@@ -51,6 +57,7 @@ export default function CircleGestureDetector({
   const radiusM2 = useSharedValue<number>(0); // per varianza (Welford)
   const isInsideBand = useSharedValue<boolean>(false);
   const lastReportedTurn = useSharedValue<number>(0); // per tracciare i giri già segnalati
+  const lastReportedAngle = useSharedValue<number>(0); // per filtrare report troppo frequenti
 
   const resetStats = () => {
     'worklet';
@@ -60,6 +67,7 @@ export default function CircleGestureDetector({
     radiusM2.value = 0;
     isInsideBand.value = false;
     lastReportedTurn.value = 0;
+    lastReportedAngle.value = 0;
   };
 
   const onLayout = (e: LayoutChangeEvent) => {
@@ -77,8 +85,8 @@ export default function CircleGestureDetector({
     onCircle?.(res);
   }, [onCircle]);
 
-  const reportChange = useCallback((turns: number, direction: 'clockwise' | 'counterclockwise') => {
-    onRotationChange?.(turns, direction);
+  const reportChange = useCallback((turns: number, direction: 'clockwise' | 'counterclockwise', speedMultiplier: number) => {
+    onRotationChange?.(turns, direction, speedMultiplier);
   }, [onRotationChange]);
 
   const reportGestureStart = useCallback(() => {
@@ -137,18 +145,23 @@ export default function CircleGestureDetector({
       // delta angolare con wrap-correction
       let d = a - prevAngle.value;
       d = normalizeAngle(d);
-      
-      // ignora micro-movimenti rumorosi
-      if (Math.abs(d) < 0.004) return;
 
       totalAngle.value += d;
       prevAngle.value = a;
 
-      // Report in tempo reale
+      // CALCOLA VELOCITÀ basata sul delta angolare con crescita logaritmica
+      const speedMultiplier = calculateSpeedMultiplier(d);
+      console.log("speedMultiplier", speedMultiplier,d,Math.abs(d));
+      // Report in tempo reale SOLO se c'è abbastanza movimento
       const TWO_PI = Math.PI * 2;
       const currentTurns = totalAngle.value / TWO_PI;
       const currentDirection = totalAngle.value < 0 ? 'clockwise' : 'counterclockwise';
-      runOnJS(reportChange)(currentTurns, currentDirection);
+      
+      // FILTRO: Report solo se l'angolo è cambiato di almeno 0.05 radianti (~2.86 gradi)
+      // rispetto all'ultimo report
+      
+        lastReportedAngle.value = totalAngle.value;
+        runOnJS(reportChange)(currentTurns, currentDirection, speedMultiplier);
 
       // Controlla se abbiamo completato un nuovo giro completo
       const currentFullTurns = Math.floor(Math.abs(currentTurns));

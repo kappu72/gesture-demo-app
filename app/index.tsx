@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { memo, useRef, useState } from "react";
 import {
   FlatList,
   StyleSheet,
@@ -12,6 +12,20 @@ interface EventCard {
   id: string;
   title: string;
 }
+
+// Componente Card puro che non si re-renderizza
+const EventCardComponent = memo(({ item, width }: { item: EventCard; width: number }) => {
+  console.log(`Rendering card: ${item.title}`);
+  
+  return (
+    <View style={[styles.cardContainer, { width }]}>
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>{item.title}</Text>
+        <Text style={styles.cardSubtitle}>Swipe with rotation gesture</Text>
+      </View>
+    </View>
+  );
+});
 
 const events: EventCard[] = Array.from({ length: 10 }, (_, i) => ({
   id: i.toString(),
@@ -50,14 +64,7 @@ export default function Index() {
   };
 
   const renderCard = ({ item }: { item: EventCard }) => {
-    return (
-      <View style={[styles.cardContainer, { width: windowWidth }]}>
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>{item.title}</Text>
-          <Text style={styles.cardSubtitle}>Swipe with rotation gesture</Text>
-        </View>
-      </View>
-    );
+    return <EventCardComponent item={item} width={windowWidth} />;
   };
 
   const getItemLayout = (_: any, index: number) => ({
@@ -97,24 +104,25 @@ export default function Index() {
           maxRadiusRatio={0.9}
           turnThreshold={0.1}
           onGestureStart={() => {
-            console.log("Gesture start");
             // Salva l'offset corrente come base
             baseOffsetRef.current = currentIndexRef.current * windowWidth;
           }}
-        onRotationChange={(turns, direction) => {
-          // Mezzo giro = 1 card (moltiplica per 2)
+        onRotationChange={(turns, direction, speedMultiplier) => {
           
-          // Calcola il nuovo offset basato sui giri (continuo, non arrotondato!)
+          // Scroll con dampening: quando acceleri, viene rallentato
+          // 1 giro completo = 1 card, ma con moltiplicatore che rallenta se vai veloce
+          const scrollAmount = Math.abs(turns) * windowWidth * speedMultiplier;
+          
           let offset;
           if (direction === 'counterclockwise') {
             // Antiorario: avanti
-            offset = baseOffsetRef.current + (Math.abs(turns) * 2 * windowWidth);
+            offset = baseOffsetRef.current + scrollAmount;
           } else {
             // Orario: indietro
-            offset = baseOffsetRef.current - (Math.abs(turns) * 2 * windowWidth);
+            offset = baseOffsetRef.current - scrollAmount;
           }
           
-          // Scroll fluido e continuo
+          // Scroll fluido con dampening automatico
           scrollToOffset(offset);
         }}
           onGestureEnd={() => {
