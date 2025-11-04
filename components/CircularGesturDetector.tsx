@@ -136,7 +136,6 @@ export default function CircleGestureDetector({
 
       // delta angolare con wrap-correction
       let d = a - prevAngle.value;
-      console.log( "d", d);
       d = normalizeAngle(d);
       
       // ignora micro-movimenti rumorosi
@@ -175,8 +174,6 @@ export default function CircleGestureDetector({
       const okBand = isInsideBand.value;
       const okTurns = Math.abs(turns) >= turnThreshold;
       const okVariance = varR <= (centerR.value * 0.15) ** 2; // soglia empirica
-
-      console.log('onEnd - turns:', turns.toFixed(2), 'okBand:', okBand, 'okTurns:', okTurns, 'okVariance:', okVariance, 'varR:', varR);
 
       if (okBand && okTurns && okVariance) {
         const direction = turns < 0 ? 'clockwise' : 'counterclockwise';

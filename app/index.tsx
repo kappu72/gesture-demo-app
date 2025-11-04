@@ -99,11 +99,9 @@ export default function Index() {
           onGestureStart={() => {
             // Salva l'offset corrente come base
             baseOffsetRef.current = currentIndexRef.current * windowWidth;
-            console.log("Gesture start - base offset:", baseOffsetRef.current);
           }}
         onRotationChange={(turns, direction) => {
           // Mezzo giro = 1 card (moltiplica per 2)
-          console.log("Rotation:", turns.toFixed(2), direction);
           
           // Calcola il nuovo offset basato sui giri (continuo, non arrotondato!)
           let offset;
@@ -123,7 +121,7 @@ export default function Index() {
             snapToNearestCard();
           }}
           onCircle={(res) => {
-            console.log("Cerchio completato!", res);
+            
           }}
         />
       </View>
