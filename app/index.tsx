@@ -15,7 +15,7 @@ interface EventCard {
 
 const events: EventCard[] = Array.from({ length: 10 }, (_, i) => ({
   id: i.toString(),
-  title: `Event ${i + 1}`,
+  title: `Evento ${i + 1}`,
 }));
 
 export default function Index() {
