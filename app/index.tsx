@@ -97,6 +97,7 @@ export default function Index() {
           maxRadiusRatio={0.9}
           turnThreshold={0.1}
           onGestureStart={() => {
+            console.log("Gesture start");
             // Salva l'offset corrente come base
             baseOffsetRef.current = currentIndexRef.current * windowWidth;
           }}
