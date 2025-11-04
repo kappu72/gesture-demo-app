@@ -30,7 +30,8 @@ const normalizeAngle = (a: number) => {
 // Moltiplicatore fisso a 1x - scroll lineare senza accelerazione
 const calculateSpeedMultiplier = (delta: number) => {
   'worklet';
-  return 1.0;
+  if (delta < 0.3) return 1
+  return 1.5;
 };
 
 export default function CircleGestureDetector({
