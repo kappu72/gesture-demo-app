@@ -11,7 +11,21 @@ import CircleGestureDetector from "../components/CircularGesturDetector";
 interface EventCard {
   id: string;
   title: string;
+  distance: string;
+  type: string;
+  date: string;
 }
+
+// Componente Tag per i badge sopra la card
+const EventTag = memo(({ label, icon }: { label: string; icon?: string }) => (
+  <View style={styles.tag}>
+    {icon && <Text style={styles.tagIcon}>{icon}</Text>}
+    <Text style={styles.tagText} numberOfLines={1}>{label}</Text>
+  </View>
+));
+
+// Prevent re-render
+EventTag.displayName = 'EventTag';
 
 // Componente Card puro che non si re-renderizza
 const EventCardComponent = memo(({ item, width }: { item: EventCard; width: number }) => {
@@ -27,9 +41,13 @@ const EventCardComponent = memo(({ item, width }: { item: EventCard; width: numb
   );
 });
 
+const eventTypes = ['Aperitivo', 'Concerto', 'Teatro', 'Mostra', 'Cinema', 'Club'];
 const events: EventCard[] = Array.from({ length: 10 }, (_, i) => ({
   id: i.toString(),
   title: `Evento ${i + 1}`,
+  distance: `${(Math.random() * 10 + 0.5).toFixed(1)} km`,
+  type: eventTypes[i % eventTypes.length],
+  date: new Date(Date.now() + i * 86400000).toLocaleDateString('it-IT', { day: '2-digit', month: 'short' }),
 }));
 
 export default function Index() {
@@ -38,6 +56,12 @@ export default function Index() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const { width: windowWidth } = useWindowDimensions();
   const baseOffsetRef = useRef(0); // offset di partenza quando inizi il gesto
+  const lastDirectionRef = useRef<string>(''); // per rilevare inversioni
+  
+  // Stato per il filtro distanza (km)
+  const [distanceKm, setDistanceKm] = useState(5.0);
+  const basePinchScaleRef = useRef(1);
+  const baseDistanceRef = useRef(5.0);
 
   const scrollToOffset = (offset: number, animated: boolean = false) => {
     const maxOffset = windowWidth * (events.length - 1);
@@ -75,26 +99,26 @@ export default function Index() {
 
   return (
     <View style={styles.container}>
+      {/* Tag fissi sopra la FlatList - 10px di margine sotto */}
+      <View style={styles.tagsContainer}>
+        <EventTag label={`${distanceKm.toFixed(1)} km`} icon="📍" />
+        <EventTag label="Aperitivo" icon="🎉" />
+        <EventTag label="05 nov" icon="📅" />
+      </View>
+
       <FlatList
         ref={flatListRef}
         data={events}
         renderItem={renderCard}
         keyExtractor={(item) => item.id}
         horizontal
-        pagingEnabled
+        pagingEnabled={false}
         scrollEnabled={false}
         showsHorizontalScrollIndicator={false}
         getItemLayout={getItemLayout}
         initialScrollIndex={0}
-        onScrollToIndexFailed={(info) => {
-          const wait = new Promise((resolve) => setTimeout(resolve, 500));
-          wait.then(() => {
-            flatListRef.current?.scrollToIndex({
-              index: info.index,
-              animated: true,
-            });
-          });
-        }}
+        decelerationRate="normal"
+        disableIntervalMomentum={true}
       />
       
       <View style={styles.gestureContainer}>
@@ -104,13 +128,24 @@ export default function Index() {
           maxRadiusRatio={0.9}
           turnThreshold={0.1}
           onGestureStart={() => {
-            // Salva l'offset corrente come base
+            // Salva l'offset corrente come base per rotazione
             baseOffsetRef.current = currentIndexRef.current * windowWidth;
+            lastDirectionRef.current = ''; // Reset direzione
+            // Salva distanza corrente come base per pinch
+            baseDistanceRef.current = distanceKm;
+            basePinchScaleRef.current = 1;
           }}
         onRotationChange={(turns, direction, speedMultiplier) => {
           
-          // Scroll con dampening: quando acceleri, viene rallentato
-          // 1 giro completo = 1 card, ma con moltiplicatore che rallenta se vai veloce
+          // RILEVA INVERSIONE DI DIREZIONE
+          if (lastDirectionRef.current !== '' && lastDirectionRef.current !== direction) {
+            // Inversione! Resetta la base all'offset corrente
+            baseOffsetRef.current = currentIndexRef.current * windowWidth;
+            console.log('Inversione! Reset base a:', baseOffsetRef.current);
+          }
+          lastDirectionRef.current = direction;
+          
+          // Scroll con velocità smoothed
           const scrollAmount = Math.abs(turns) * windowWidth * speedMultiplier;
           
           let offset;
@@ -122,12 +157,21 @@ export default function Index() {
             offset = baseOffsetRef.current - scrollAmount;
           }
           
-          // Scroll fluido con dampening automatico
+          // Scroll fluido
           scrollToOffset(offset);
         }}
           onGestureEnd={() => {
             // Quando finisce il gesto, fai snap alla card più vicina
             snapToNearestCard();
+          }}
+          onPinchChange={(scale) => {
+            // Calcola nuova distanza basata sul pinch
+            // scale > 1 = allarga = aumenta km
+            // scale < 1 = stringi = diminuisci km
+            // Range: 0.5 km - 50 km
+            const newDistance = baseDistanceRef.current * scale;
+            const clampedDistance = Math.max(0.5, Math.min(50, newDistance));
+            setDistanceKm(clampedDistance);
           }}
           onCircle={(res) => {
             
@@ -145,13 +189,15 @@ const styles = StyleSheet.create({
   },
   cardContainer: {
     flex: 1,
-    justifyContent: "center",
+    justifyContent: "flex-start",
     alignItems: "center",
-    padding: 20,
+    paddingHorizontal: 20,
+    paddingTop: 40,
+    paddingBottom: 20,
   },
   card: {
     width: "100%",
-    height: "80%",
+    height: "60%",
     backgroundColor: "#fff",
     borderRadius: 20,
     borderWidth: 3,
@@ -179,11 +225,39 @@ const styles = StyleSheet.create({
     color: "#666",
     textAlign: "center",
   },
+  tagsContainer: {
+    flexDirection: "row",
+    paddingHorizontal: 20,
+    paddingTop: 30,
+    paddingBottom: 0,
+    gap: 10,
+    backgroundColor: "#e0e0e0",
+  },
+  tag: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    borderRadius: 20,
+    gap: 5,
+  },
+  tagIcon: {
+    fontSize: 14,
+  },
+  tagText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "600",
+  },
   gestureContainer: {
     position: "absolute",
-    bottom: 40,
+    bottom: 0,
     left: 0,
     right: 0,
+    height: 300,
     alignItems: "center",
     justifyContent: "center",
   },

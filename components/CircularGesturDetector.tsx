@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { LayoutChangeEvent, StyleSheet, Text, View } from 'react-native';
+import { Animated, LayoutChangeEvent, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { runOnJS, useSharedValue } from 'react-native-reanimated';
 
@@ -17,6 +17,7 @@ type Props = {
   onRotationChange?: (turns: number, direction: 'clockwise' | 'counterclockwise', speedMultiplier: number) => void; // speedMultiplier: 1 = lento, 2 = veloce
   onGestureStart?: () => void; // chiamato quando inizi il gesto
   onGestureEnd?: () => void; // chiamato quando finisce il gesto
+  onPinchChange?: (scale: number) => void; // chiamato quando cambia il pinch (scale > 1 = allarga, < 1 = stringi)
 };
 
 const normalizeAngle = (a: number) => {
@@ -31,7 +32,8 @@ const normalizeAngle = (a: number) => {
 const calculateSpeedMultiplier = (delta: number) => {
   'worklet';
   if (delta < 0.3) return 1
-  return 1.5;
+
+  return 1.2;
 };
 
 export default function CircleGestureDetector({
@@ -43,6 +45,7 @@ export default function CircleGestureDetector({
   onRotationChange,
   onGestureStart,
   onGestureEnd,
+  onPinchChange,
 }: Props) {
   const [label, setLabel] = useState<string>('Fai un cerchio con un dito');
   
@@ -59,6 +62,12 @@ export default function CircleGestureDetector({
   const isInsideBand = useSharedValue<boolean>(false);
   const lastReportedTurn = useSharedValue<number>(0); // per tracciare i giri già segnalati
   const lastReportedAngle = useSharedValue<number>(0); // per filtrare report troppo frequenti
+  
+  // Per velocità angolare smoothed
+  const angularVelocity = useSharedValue<number>(0); // rad per update
+  const lastUpdateTime = useSharedValue<number>(0);
+  const lastDirection = useSharedValue<string>(''); // per rilevare inversione
+  const lastRadius = useSharedValue<number>(0); // per rilevare movimenti circolari
 
   const resetStats = () => {
     'worklet';
@@ -69,14 +78,19 @@ export default function CircleGestureDetector({
     isInsideBand.value = false;
     lastReportedTurn.value = 0;
     lastReportedAngle.value = 0;
+    angularVelocity.value = 0;
+    lastUpdateTime.value = 0;
+    lastDirection.value = '';
+    lastRadius.value = 0;
   };
 
   const onLayout = (e: LayoutChangeEvent) => {
     const { width, height } = e.nativeEvent.layout;
-    const s = Math.min(width, height);
-    centerX.value = s / 2;
-    centerY.value = s / 2;
-    centerR.value = s / 2;
+    // Il centro deve essere al centro del cerchio nero visibile (size),
+    // non al centro dell'area verde grande
+    centerX.value = width / 2;
+    centerY.value = height / 2;
+    centerR.value = size / 2; // Raggio basato sul cerchio nero, non sul container
   };
 
   const report = useCallback((res: CircleResult) => {
@@ -98,6 +112,18 @@ export default function CircleGestureDetector({
     onGestureEnd?.();
   }, [onGestureEnd]);
 
+  const reportPinchChange = useCallback((scale: number) => {
+    onPinchChange?.(scale);
+  }, [onPinchChange]);
+
+  // Gesto Pinch per controllare i km
+  const pinch = Gesture.Pinch()
+    .onUpdate((e) => {
+      // scale: > 1 = allarga, < 1 = stringi
+      runOnJS(reportPinchChange)(e.scale);
+    });
+
+  // Gesture Pan per rotazione (solo 1 dito)
   const pan = Gesture.Pan()
     .minPointers(1)
     .maxPointers(1)
@@ -128,13 +154,39 @@ export default function CircleGestureDetector({
       const dy = e.y - cy;
       // raggio e angolo correnti
       const r = Math.hypot(dx, dy);
+      
+      // FILTRO: ignora movimenti troppo vicini al centro
+      if (r < R * 0.05) return;
+      
       const a = Math.atan2(dy, dx);
+      
+      // Calcola delta angolare prima dei filtri
+      let d = a - prevAngle.value;
+      d = normalizeAngle(d);
+      
+      // FILTRO MOLTO FORTE: ignora movimenti quasi lineari
+      // Solo movimenti chiaramente circolari vengono accettati
+      if (lastRadius.value > 0) {
+        const angleChangeMagnitude = Math.abs(d);
+        
+        // SOGLIA MINIMA: l'angolo deve cambiare di almeno 0.05 rad (~2.86°)
+        // Questo elimina tutti i movimenti quasi-lineari
+        if (angleChangeMagnitude < 0.05) {
+          lastRadius.value = r;
+          prevAngle.value = a;
+          return;
+        }
+      }
+      lastRadius.value = r;
 
-      // aggiorna band di validità: tra min/max percentuale del raggio massimo
-      const minR = R * minRadiusRatio;
-      const maxR = R * maxRadiusRatio;
-      const inside = r >= minR && r <= maxR;
-      if (inside) isInsideBand.value = true;
+      // Rimuovo temporaneamente il controllo delle band per debug
+      // const minR = R * minRadiusRatio;
+      // const maxR = R * maxRadiusRatio;
+      // const inside = r >= minR && r <= maxR;
+      // if (inside) isInsideBand.value = true;
+      
+      // Segna sempre come valido
+      isInsideBand.value = true;
       
       // varianza r (Welford) per "circolarità"
       const n = (samples.value += 1);
@@ -143,26 +195,37 @@ export default function CircleGestureDetector({
       const delta2 = r - radiusMean.value;
       radiusM2.value += delta * delta2;
 
-      // delta angolare con wrap-correction
-      let d = a - prevAngle.value;
-      d = normalizeAngle(d);
-
-      totalAngle.value += d;
+      // CALCOLA VELOCITÀ ANGOLARE SMOOTHED con EMA
+      // Smoothing factor: più alto = più reattivo, più basso = più smooth
+      const alpha = 0.4;
+      angularVelocity.value = alpha * d + (1 - alpha) * angularVelocity.value;
+      
+      // Direzione basata sul segno della velocità smoothed
+      const currentDirection = angularVelocity.value < 0 ? 'clockwise' : 'counterclockwise';
+      
+      // RILEVA INVERSIONE DI DIREZIONE
+      if (lastDirection.value !== '' && lastDirection.value !== currentDirection) {
+        // Inversione! Reset totalAngle per evitare salti
+        totalAngle.value = 0;
+        console.log('Inversione direzione rilevata!');
+      }
+      lastDirection.value = currentDirection;
+      
+      // INTEGRA la velocità per ottenere la rotazione discretizzata
+      // Invece di usare l'angolo reale, usiamo la velocità smoothed
+      const discreteRotation = angularVelocity.value;
+      
+      totalAngle.value += discreteRotation; // Accumula velocità invece di angolo grezzo
       prevAngle.value = a;
 
-      // CALCOLA VELOCITÀ basata sul delta angolare con crescita logaritmica
-      const speedMultiplier = calculateSpeedMultiplier(d);
-      console.log("speedMultiplier", speedMultiplier,d,Math.abs(d));
-      // Report in tempo reale SOLO se c'è abbastanza movimento
+      // VELOCITÀ sempre a 1 per scroll lineare e fluido
+      const speedMultiplier = 1;
+
+      // Report continuo con la velocità smoothed
       const TWO_PI = Math.PI * 2;
       const currentTurns = totalAngle.value / TWO_PI;
-      const currentDirection = totalAngle.value < 0 ? 'clockwise' : 'counterclockwise';
       
-      // FILTRO: Report solo se l'angolo è cambiato di almeno 0.05 radianti (~2.86 gradi)
-      // rispetto all'ultimo report
-      
-        lastReportedAngle.value = totalAngle.value;
-        runOnJS(reportChange)(currentTurns, currentDirection, speedMultiplier);
+      runOnJS(reportChange)(currentTurns, currentDirection, speedMultiplier);
 
       // Controlla se abbiamo completato un nuovo giro completo
       const currentFullTurns = Math.floor(Math.abs(currentTurns));
@@ -208,36 +271,49 @@ export default function CircleGestureDetector({
       resetStats();
     });
 
+  // Combina Pan e Pinch - possono funzionare simultaneamente
+  const composed = Gesture.Simultaneous(pan, pinch);
+
   return (
-    <GestureDetector gesture={pan}>
-      <View
+    <GestureDetector gesture={composed}>
+      <Animated.View 
         onLayout={onLayout}
-        style={[styles.pad, { width: size, height: size, borderRadius: size / 2 }]}
+        style={{ 
+          width: '100%', 
+          height: '100%', 
+          backgroundColor: 'rgba(0, 255, 0, 0.3)', 
+          alignItems: 'center', 
+          justifyContent: 'center' 
+        }}
       >
-        {/* Anello guida */}
         <View
-          style={[
-            styles.ring,
-            {
-              width: size * 0.9,
-              height: size * 0.9,
-              borderRadius: (size * 0.9) / 2,
-            },
-          ]}
-        />
-        <Text style={styles.label}>{label}</Text>
-        <View
-          pointerEvents="none"
-          style={[
-            styles.band,
-            {
-              width: size * (2 * 0.65), // illustrativo visivo ~ banda centrale
-              height: size * (2 * 0.65),
-              borderRadius: size * 0.65,
-            },
-          ]}
-        />
-      </View>
+          style={[styles.pad, { width: size, height: size, borderRadius: size / 2 }]}
+        >
+          {/* Anello guida */}
+          <View
+            style={[
+              styles.ring,
+              {
+                width: size * 0.9,
+                height: size * 0.9,
+                borderRadius: (size * 0.9) / 2,
+              },
+            ]}
+          />
+          <Text style={styles.label}>{label}</Text>
+          <View
+            pointerEvents="none"
+            style={[
+              styles.band,
+              {
+                width: size * (2 * 0.65), // illustrativo visivo ~ banda centrale
+                height: size * (2 * 0.65),
+                borderRadius: size * 0.65,
+              },
+            ]}
+          />
+        </View>
+      </Animated.View>
     </GestureDetector>
   );
 }
